@@ -1,70 +1,67 @@
-# OneUI AMOLED (LSPosed Module)
+# OneUI AMOLED
 
-An Xposed / LSPosed module that transforms Samsung **One UI Home Launcher** (`com.sec.android.app.launcher`) and **System UI** (`com.android.systemui`) dark theme into a true, 100% pitch black **AMOLED (#000000)** experience.
+LSPosed module targeting Samsung One UI Home Launcher (`com.sec.android.app.launcher`) and System UI (`com.android.systemui`) on One UI 8 / Android 16. Replaces dark grey UI surfaces and semi-transparent blur backdrops with solid `#000000` AMOLED black.
 
-Designed specifically for OLED / AMOLED displays to maximize battery life, turn off pixels, and eliminate dull grey scrims and blurry backdrops.
+## Technical Architecture
 
----
+### 1. System UI (`com.android.systemui`)
+- `com.android.systemui.NotiRune.NOTI_STYLE_ENR_WINDOW_BLUR`: Disabled via reflection on startup to prevent SurfaceFlinger from allocating and rendering background blur layers beneath Heads-Up Notification (HUN) banners.
+- `com.android.systemui.statusbar.notification.row.NotificationBackgroundView`:
+  - Intercepts `setDrawableAlpha` to block translucency.
+  - Replaces default recoil drawables with solid `#000000` `GradientDrawable` instances maintaining exact corner radii.
+  - Rejects `com.android.internal.graphics.drawable.BackgroundBlurDrawable` instances passed into `setBackground`.
+- `com.android.systemui.shade.SecPanelBackground`: Enforces `mMaxAlpha = 1.0f` and pure black background color across notification shade expansions.
+- `com.android.systemui.statusbar.phone.ColoredBGHelper`: Overrides alpha values to 255 and tints container layers to `#000000`.
+- `com.android.systemui.qs.tileimpl.SecQSTileBaseView`: Configures inactive tile circle drawables to solid `#000000` fill.
+- `com.android.systemui.blur.SecQpBlurController`: Hooks `doBlur` to manage opaque `#000000` visibility during pull-down transitions.
+- `com.android.systemui.blur.ui.viewbinder.SecCapturedBlurContainerBinder`: Prevents background window capture passes and sets container views to `#000000`.
+- `com.android.systemui.statusbar.phone.ScrimController`: Forces shade scrims (`mScrimBehind`) to opaque black.
+- `com.android.systemui.media.SecMediaControlPanel` and `SecPlayerViewHolder`: Sets player view to `#000000` and detaches album art background tinting.
+- `androidx.compose.material3.ColorScheme`: Scans class hierarchy dynamically and forces Material 3 dark container tokens to 64-bit AMOLED black.
 
-## 🌟 Features
+### 2. One UI Home (`com.sec.android.app.launcher`)
+- `com.android.quickstep.RecentsActivity`: Hooks `onCreate` and `onResume` to set window decor background, navigation bar, and status bar to `#000000`.
+- `y2.d` (`ScrimView`): Overrides `b()` and `onDraw` to render an opaque `#000000` canvas.
+- `y2.e` (`WallpaperBlurView`): Disables hardware wallpaper blur generation.
 
-- **True Pitch Black Recents / Overview (`#000000`)**:
-  - Replaces One UI's dark grey `#212121` overview background with 100% pure black.
-  - Suppresses wallpaper blur brightening (`y2.e` / `WallpaperBlurView`) and forces `y2.d` (`ScrimView`) to draw solid black.
-  - Sets pure black status bar and navigation bar decor for seamless edge-to-edge aesthetics.
-- **Pure AMOLED Notification Shade**:
-  - Every notification card (`NotificationBackgroundView`) is drawn directly with a solid, pure black (`#000000`) fill matching native corner radii, completely suppressing app tint leaks (Nu, Telegram, etc.) with zero wireframes.
-  - Eliminates the window blur under heads-up notifications (`NotiRune.NOTI_STYLE_ENR_WINDOW_BLUR` & `BackgroundBlurDrawable`).
-  - Full backdrop blackout via `SecQpBlurController.doBlur`, `SecCapturedBlurContainerBinder`, `SecPanelBackground`, and `ScrimController.updateScrimColor`, ensuring 100% opaque `#000000` black with zero wallpaper or background app blur showing through.
-- **AMOLED Quick Settings Panel (One UI 8 Split Layout)**:
-  - Wi-Fi & Bluetooth pill cards, 4x3 toggle container, media card, and SmartThings container are themed to solid pure AMOLED black.
-  - Inactive toggle buttons have pure `#000000` circular pills with crisp white icons.
-  - Brightness slider track background is blacked out.
-  - Jetpack Compose Material 3 `ColorScheme` containers patched to pure black.
----
+## Prerequisites
 
-## 📱 Requirements
+- Android 13 to Android 16 (API 33-36). Tested on SM-S916U1 running One UI 8.
+- Working LSPosed environment (Zygisk-LSPosed, LSPosed_mod, or KernelSU Zygisk).
+- Java Development Kit (JDK 17).
+- Android SDK Build-Tools (34.0.0+) and Android API 34 platform jar.
 
-- Android 13+ up to Android 16+ (One UI 6.x, 7.x, 8.x)
-- Root access (KernelSU, APatch, or Magisk)
-- Zygisk-LSPosed or compatible modern Xposed framework
-- Target packages:
-  - `com.sec.android.app.launcher` (One UI Home)
-  - `com.android.systemui` (System UI)
-
----
-
-## 🛠️ How It Works
-
-1. **One UI Home Launcher (`com.sec.android.app.launcher`)**:
-   - `com.android.quickstep.RecentsActivity`: Hooks `onCreate` and `onResume` to set window decor, status bar, and root container to `#000000`.
-   - `y2.d` (`ScrimView`): Hooks `onDraw` and `b()` / `setEndColor` to draw solid `#000000` alpha.
-   - `y2.e` (`WallpaperBlurView`): Silences hardware wallpaper blur.
-
-2. **System UI (`com.android.systemui`)**:
-   - `NotiRune.NOTI_STYLE_ENR_WINDOW_BLUR`: Disabled via reflection to permanently prevent SurfaceFlinger from projecting a blur layer under Heads-Up Notification (HUN) banners.
-   - `NotificationBackgroundView`: Replaces `seslRecoilDrawable` with direct, clean `#000000` AMOLED fill matching exact corner radii, and rejects `BackgroundBlurDrawable` in `setBackground`.
-   - `SecQpBlurController.doBlur`: Synchronizes `SecPanelBackground` to solid `#000000` black at `alpha = 1.0f` on expansion and hides it on collapse.
-   - `SecCapturedBlurContainerBinder`: Suppresses background app screenshot capture and forces `CapturedBlurContainer` to solid black.
-   - `ScrimController.updateScrimColor`: Forces all shade scrims (`mScrimBehind`, etc.) to 100% opaque `#000000` black.
-   - `SecPanelBackground`: Forces `mMaxAlpha` to 1.0f with pure black fill.
-   - `ColoredBGHelper`: Forces alpha values to 255 and tints all container backgrounds to pure black.
-   - `SecQSTileBaseView`: Sets inactive toggle circle backgrounds to pure AMOLED `#000000`.
-   - `SecMediaControlPanel` & `SecPlayerViewHolder`: Strips `albumView` and sets `playerView` to solid `#000000` black.
-   - `androidx.compose.material3.ColorScheme`: Patches Compose surface/container colors to 64-bit AMOLED black.
----
-
-## 🚀 Building from Source
+## Building from Source
 
 ```bash
-cd oneui_amoled
+git clone https://github.com/rainyluna/oneui-amoled.git
+cd oneui-amoled
+chmod +x build.sh
 ./build.sh
 ```
 
-The standalone script uses `javac`, `d8`, `aapt2`, `zipalign`, and `apksigner` to produce `oneui-amoled.apk`.
+### Build Pipeline Details
+`build.sh` runs the following sequence without Gradle overhead:
+1. `javac` compiles standalone Xposed stubs in `stubs/`.
+2. `javac` compiles `src/com/vertigo/oneuiamoled/HookEntry.java` against `android.jar` and stub classes.
+3. `d8` converts compiled classes into `classes.dex` targeting API 34.
+4. `aapt2 compile` and `aapt2 link` compile manifests and resources (`res/`).
+5. `zip` packages `classes.dex` and `assets/xposed_init` into the APK.
+6. `zipalign` 4-byte aligns the package.
+7. `apksigner` signs the package with debug RSA-2048 keys.
+8. Output artifact: `oneui-amoled.apk`.
 
----
+## Installation
 
-## 📄 License
-
-MIT License
+1. Install `oneui-amoled.apk`:
+   ```bash
+   adb install -r oneui-amoled.apk
+   ```
+2. Open LSPosed Manager and enable the module.
+3. Verify target package scope contains:
+   - `com.android.systemui`
+   - `com.sec.android.app.launcher`
+4. Soft reboot `system_server` or restart SystemUI:
+   ```bash
+   adb shell "su -c 'kill \$(pidof system_server)'"
+   ```
