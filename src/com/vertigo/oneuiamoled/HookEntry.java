@@ -207,32 +207,16 @@ public class HookEntry implements IXposedHookLoadPackage {
                 protected void afterHookedMethod(MethodHookParam param) throws Throwable {
                     View v = (View) param.thisObject;
                     XposedHelpers.setFloatField(v, "mMaxAlpha", 1.0f);
-                    Drawable bg = v.getBackground();
-                    if (bg instanceof android.graphics.drawable.GradientDrawable) {
-                        ((android.graphics.drawable.GradientDrawable) bg).setColor(COLOR_AMOLED_BLACK);
-                    } else if (bg != null) {
-                        bg.setTint(COLOR_AMOLED_BLACK);
-                    }
+                    v.setBackgroundColor(COLOR_AMOLED_BLACK);
                 }
             };
             XposedHelpers.findAndHookConstructor(secPanelBgClass, Context.class, android.util.AttributeSet.class, panelHook);
             XposedHelpers.findAndHookMethod(secPanelBgClass, "setAlpha", float.class, new XC_MethodHook() {
                 @Override
                 protected void beforeHookedMethod(MethodHookParam param) throws Throwable {
-                    float f = (float) param.args[0];
                     View v = (View) param.thisObject;
-                    if (f > 0.005f) {
-                        v.setVisibility(View.VISIBLE);
-                    } else {
-                        v.setVisibility(View.GONE);
-                    }
                     XposedHelpers.setFloatField(v, "mMaxAlpha", 1.0f);
-                    Drawable bg = v.getBackground();
-                    if (bg instanceof android.graphics.drawable.GradientDrawable) {
-                        ((android.graphics.drawable.GradientDrawable) bg).setColor(COLOR_AMOLED_BLACK);
-                    } else if (bg != null) {
-                        bg.setTint(COLOR_AMOLED_BLACK);
-                    }
+                    v.setBackgroundColor(COLOR_AMOLED_BLACK);
                 }
             });
             XposedBridge.log(TAG + "Hooked SecPanelBackground for 100% opaque AMOLED backdrop");
@@ -240,32 +224,35 @@ public class HookEntry implements IXposedHookLoadPackage {
             XposedBridge.log(TAG + "Error hooking SecPanelBackground: " + t);
         }
 
-        // 2b. NotificationShadeWindowView onDraw blackout
+        // 2b. NotificationShadeWindowView onDraw blackout (only when panel/QS is open, never for HUN popups)
         try {
             Class<?> shadeWindowClass = XposedHelpers.findClass("com.android.systemui.shade.NotificationShadeWindowView", cl);
             XposedHelpers.findAndHookMethod(shadeWindowClass, "onDraw", Canvas.class, new XC_MethodHook() {
                 @Override
                 protected void afterHookedMethod(MethodHookParam param) throws Throwable {
                     View root = (View) param.thisObject;
-                    int stackId = root.getResources().getIdentifier("notification_stack_scroller", "id", root.getContext().getPackageName());
+                    int panelBgId = root.getResources().getIdentifier("notification_panel_background", "id", root.getContext().getPackageName());
                     int qsId = root.getResources().getIdentifier("qs_frame", "id", root.getContext().getPackageName());
-                    View stack = stackId != 0 ? root.findViewById(stackId) : null;
+                    View panelBg = panelBgId != 0 ? root.findViewById(panelBgId) : null;
                     View qs = qsId != 0 ? root.findViewById(qsId) : null;
                     
-                    boolean stackVisible = stack != null && stack.getVisibility() == View.VISIBLE && stack.getAlpha() > 0.005f;
-                    boolean qsVisible = qs != null && qs.getVisibility() == View.VISIBLE && qs.getAlpha() > 0.005f;
+                    // ONLY black out when the pull-down shade panel or QS is actively visible.
+                    // Never check notification_stack_scroller here, because HUN (heads-up popups) make
+                    // the stack scroller visible over running apps without opening the shade!
+                    boolean panelVisible = panelBg != null && panelBg.getVisibility() == View.VISIBLE && panelBg.getAlpha() > 0.01f;
+                    boolean qsVisible = qs != null && qs.getVisibility() == View.VISIBLE && qs.getAlpha() > 0.01f;
                     
-                    if (stackVisible || qsVisible) {
+                    if (panelVisible || qsVisible) {
                         Canvas canvas = (Canvas) param.args[0];
                         if (canvas != null) {
-                            float alpha = stackVisible ? stack.getAlpha() : (qs != null ? qs.getAlpha() : 1.0f);
+                            float alpha = panelVisible ? panelBg.getAlpha() : (qs != null ? qs.getAlpha() : 1.0f);
                             int a = Math.round(Math.min(1.0f, alpha * 2.0f) * 255);
                             canvas.drawColor(Color.argb(a, 0, 0, 0));
                         }
                     }
                 }
             });
-            XposedBridge.log(TAG + "Hooked NotificationShadeWindowView.onDraw for guaranteed blackout");
+            XposedBridge.log(TAG + "Hooked NotificationShadeWindowView.onDraw for guaranteed blackout (panel gated)");
         } catch (Throwable t) {
             XposedBridge.log(TAG + "Error hooking NotificationShadeWindowView.onDraw: " + t);
         }
