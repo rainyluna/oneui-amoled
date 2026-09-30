@@ -2,8 +2,15 @@ package com.vertigo.oneuiamoled;
 
 import android.app.Activity;
 import android.content.Context;
+import android.graphics.Bitmap;
 import android.graphics.Canvas;
 import android.graphics.Color;
+import android.graphics.Paint;
+import android.graphics.Path;
+import android.graphics.PorterDuff;
+import android.graphics.PorterDuffXfermode;
+import android.graphics.RectF;
+import android.graphics.drawable.BitmapDrawable;
 import android.graphics.drawable.ColorDrawable;
 import android.graphics.drawable.Drawable;
 import android.graphics.drawable.LayerDrawable;
@@ -11,6 +18,9 @@ import android.os.Bundle;
 import android.view.View;
 import android.view.Window;
 
+import android.widget.ImageView;
+import java.lang.reflect.Field;
+import java.lang.reflect.Constructor;
 import java.lang.reflect.Method;
 import java.lang.reflect.Modifier;
 
@@ -108,13 +118,6 @@ public class HookEntry implements IXposedHookLoadPackage {
                         XposedHelpers.setIntField(param.thisObject, "h", COLOR_AMOLED_BLACK);
                     } catch (Throwable ignored) {}
                 }
-                @Override
-                protected void afterHookedMethod(MethodHookParam param) throws Throwable {
-                    Canvas canvas = (Canvas) param.args[0];
-                    if (canvas != null) {
-                        canvas.drawColor(COLOR_AMOLED_BLACK);
-                    }
-                }
             });
 
             for (Method m : clazz.getDeclaredMethods()) {
@@ -156,9 +159,26 @@ public class HookEntry implements IXposedHookLoadPackage {
     // SystemUI Hooks (Notifications, Scrim, QS)
     // ==========================================
     private void hookSystemUI(final ClassLoader cl) {
+        // 0. Disable Notification Row Window Blur (eliminates weird blur under HUN banner)
+        try {
+            Class<?> notiRuneClass = XposedHelpers.findClass("com.android.systemui.NotiRune", cl);
+            Field f = notiRuneClass.getDeclaredField("NOTI_STYLE_ENR_WINDOW_BLUR");
+            f.setAccessible(true);
+            f.setBoolean(null, false);
+            XposedBridge.log(TAG + "Disabled NotiRune.NOTI_STYLE_ENR_WINDOW_BLUR (killed HUN window blur)");
+        } catch (Throwable t) {
+        }
+
         // 1. Notification Card Background (NotificationBackgroundView)
         try {
             Class<?> notifBgClass = XposedHelpers.findClass("com.android.systemui.statusbar.notification.row.NotificationBackgroundView", cl);
+
+            XposedHelpers.findAndHookMethod(notifBgClass, "setBackground", Drawable.class, new XC_MethodHook() {
+                @Override
+                protected void beforeHookedMethod(MethodHookParam param) throws Throwable {
+                    param.args[0] = null; // Kills BackgroundBlurDrawable permanently
+                }
+            });
             
             XposedHelpers.findAndHookMethod(notifBgClass, "setTint", int.class, new XC_MethodHook() {
                 @Override
@@ -167,36 +187,175 @@ public class HookEntry implements IXposedHookLoadPackage {
                 }
             });
 
+            XposedHelpers.findAndHookMethod(notifBgClass, "setDrawableAlpha", int.class, new XC_MethodHook() {
+                @Override
+                protected void beforeHookedMethod(MethodHookParam param) throws Throwable {
+                    param.args[0] = 255;
+                }
+            });
+
+            try {
+                Class<?> recoilClass = XposedHelpers.findClass("androidx.appcompat.graphics.drawable.SeslRecoilDrawable", cl);
+                XposedHelpers.findAndHookMethod(notifBgClass, "setCustomBackground", recoilClass, new XC_MethodHook() {
+                    @Override
+                    protected void afterHookedMethod(MethodHookParam param) throws Throwable {
+                        Object bg = param.args[0];
+                        if (bg != null) {
+                            try {
+                                XposedHelpers.callMethod(bg, "setColorFilter", COLOR_AMOLED_BLACK, android.graphics.PorterDuff.Mode.SRC);
+                                int layers = (int) XposedHelpers.callMethod(bg, "getNumberOfLayers");
+                                for (int i = 0; i < layers; i++) {
+                                    Drawable l = (Drawable) XposedHelpers.callMethod(bg, "getDrawable", i);
+                                    if (l instanceof android.graphics.drawable.GradientDrawable) {
+                                        android.graphics.drawable.GradientDrawable gd = (android.graphics.drawable.GradientDrawable) l;
+                                        gd.setColor(COLOR_AMOLED_BLACK);
+                                        gd.setAlpha(255);
+                                    }
+                                }
+                            } catch (Throwable ignored) {}
+                        }
+                    }
+                });
+            } catch (Throwable ignored) {}
+
+            final Paint amoledFillPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
+            amoledFillPaint.setStyle(Paint.Style.FILL);
+            amoledFillPaint.setColor(COLOR_AMOLED_BLACK);
+
             XposedHelpers.findAndHookMethod(notifBgClass, "onDraw", Canvas.class, new XC_MethodHook() {
                 @Override
                 protected void beforeHookedMethod(MethodHookParam param) throws Throwable {
-                    View nbv = (View) param.thisObject;
-                    Drawable curBg = nbv.getBackground();
-                    if (curBg != null) {
-                        curBg.setAlpha(0);
-                    }
-                    Object bg = XposedHelpers.getObjectField(nbv, "mBackground");
-                    if (bg != null) {
+                    Canvas canvas = (Canvas) param.args[0];
+                    if (canvas != null) {
+                        View nbv = (View) param.thisObject;
+                        int h = nbv.getHeight();
                         try {
-                            XposedHelpers.callMethod(bg, "setColorFilter", COLOR_AMOLED_BLACK, android.graphics.PorterDuff.Mode.SRC);
+                            h = (int) XposedHelpers.callMethod(nbv, "getActualHeight");
                         } catch (Throwable ignored) {}
+
+                        float[] radii = null;
                         try {
-                            int layers = (int) XposedHelpers.callMethod(bg, "getNumberOfLayers");
-                            for (int i = 0; i < layers; i++) {
-                                Drawable l = (Drawable) XposedHelpers.callMethod(bg, "getDrawable", i);
-                                if (l instanceof android.graphics.drawable.GradientDrawable) {
-                                    android.graphics.drawable.GradientDrawable gd = (android.graphics.drawable.GradientDrawable) l;
-                                    gd.setColor(COLOR_AMOLED_BLACK);
-                                    gd.setAlpha(255);
+                            radii = (float[]) XposedHelpers.getObjectField(nbv, "mCornerRadii");
+                        } catch (Throwable ignored) {}
+
+                        Path p = new Path();
+                        RectF r = new RectF(0, 0, nbv.getWidth(), h);
+                        if (radii != null) {
+                            p.addRoundRect(r, radii, Path.Direction.CW);
+                        } else {
+                            p.addRect(r, Path.Direction.CW);
+                        }
+                        canvas.drawPath(p, amoledFillPaint);
+                    }
+                    param.setResult(null); // SUPPRESS seslRecoilDrawable (kills grey Nu / purple Telegram tints completely!)
+                }
+            });
+            XposedBridge.log(TAG + "Hooked NotificationBackgroundView (direct solid pure black fill, no wireframe)");
+        } catch (Throwable t) {
+            XposedBridge.log(TAG + "Error hooking NotificationBackgroundView: " + t);
+        }
+        // 1a. SecQpBlurController (Force SecPanelBackground to solid black on shade expand)
+        try {
+            Class<?> qpBlurClass = XposedHelpers.findClass("com.android.systemui.blur.SecQpBlurController", cl);
+            XposedHelpers.findAndHookMethod(qpBlurClass, "doBlur", float.class, "com.android.systemui.blur.di.SecPanelBlurBinding$BlurType", new XC_MethodHook() {
+                @Override
+                protected void afterHookedMethod(MethodHookParam param) throws Throwable {
+                    float f = (float) param.args[0];
+                    try {
+                        Object panelBgBinding = XposedHelpers.getObjectField(param.thisObject, "panelBackgroundBinding");
+                        if (panelBgBinding != null) {
+                            View view = (View) XposedHelpers.getObjectField(panelBgBinding, "view");
+                            if (view != null) {
+                                if (f > 0.01f) {
+                                    view.setVisibility(View.VISIBLE);
+                                    view.setBackgroundColor(COLOR_AMOLED_BLACK);
+                                    XposedHelpers.setFloatField(view, "mMaxAlpha", 1.0f);
+                                    XposedHelpers.callMethod(view, "setAlpha", 1.0f);
+                                } else {
+                                    view.setVisibility(View.GONE);
                                 }
                             }
-                        } catch (Throwable ignored) {}
+                        }
+                    } catch (Throwable ignored) {}
+                }
+            });
+            XposedBridge.log(TAG + "Hooked SecQpBlurController.doBlur for 100% pitch black AMOLED backdrop");
+        } catch (Throwable t) {
+            XposedBridge.log(TAG + "Error hooking SecQpBlurController.doBlur: " + t);
+        }
+
+        // 1b. SecCapturedBlurContainerBinder (Suppress screenshotting background app & force solid black)
+        try {
+            Class<?> cbBinderClass = XposedHelpers.findClass("com.android.systemui.blur.ui.viewbinder.SecCapturedBlurContainerBinder", cl);
+            XposedHelpers.findAndHookMethod(cbBinderClass, "doBlur", "com.android.systemui.blur.di.SecPanelBlurBinding$BlurType", new XC_MethodHook() {
+                @Override
+                protected void beforeHookedMethod(MethodHookParam param) throws Throwable {
+                    param.setResult(null); // SUPPRESS SCREENSHOTTING / BLURRING THE BACKGROUND APP!
+                }
+            });
+            XposedHelpers.findAndHookMethod(cbBinderClass, "setFraction", float.class, "com.android.systemui.blur.di.SecPanelBlurBinding$BlurType", new XC_MethodHook() {
+                @Override
+                protected void afterHookedMethod(MethodHookParam param) throws Throwable {
+                    View v = (View) XposedHelpers.getObjectField(param.thisObject, "view");
+                    if (v != null) {
+                        float f = (float) param.args[0];
+                        if (f > 0.01f) {
+                            v.setBackgroundColor(COLOR_AMOLED_BLACK);
+                            v.setAlpha(1.0f);
+                        } else {
+                            v.setAlpha(0.0f);
+                        }
                     }
                 }
             });
-            XposedBridge.log(TAG + "Hooked NotificationBackgroundView (setTint + onDraw)");
+            XposedBridge.log(TAG + "Hooked SecCapturedBlurContainerBinder (suppressed app screenshot blur, forced solid black)");
         } catch (Throwable t) {
-            XposedBridge.log(TAG + "Error hooking NotificationBackgroundView: " + t);
+            XposedBridge.log(TAG + "Error hooking SecCapturedBlurContainerBinder: " + t);
+        }
+
+        // 1c. CapturedBlurContainer (Ensure visible & black)
+        try {
+            Class<?> capturedBlurClass = XposedHelpers.findClass("com.android.systemui.statusbar.phone.CapturedBlurContainer", cl);
+            XposedHelpers.findAndHookConstructor(capturedBlurClass, Context.class, android.util.AttributeSet.class, new XC_MethodHook() {
+                @Override
+                protected void afterHookedMethod(MethodHookParam param) throws Throwable {
+                    View v = (View) param.thisObject;
+                    v.setVisibility(View.VISIBLE);
+                    v.setBackgroundColor(COLOR_AMOLED_BLACK);
+                }
+            });
+            XposedBridge.log(TAG + "Hooked CapturedBlurContainer constructor for AMOLED backdrop");
+        } catch (Throwable t) {
+            XposedBridge.log(TAG + "Error hooking CapturedBlurContainer: " + t);
+        }
+
+        // 1c. SecQSNewBlurView (Quick Settings hardware blur layer -> solid black)
+        try {
+            Class<?> qsNewBlurClass = XposedHelpers.findClass("com.android.systemui.blur.SecQSNewBlurView", cl);
+            XposedHelpers.findAndHookMethod(qsNewBlurClass, "onFinishInflate", new XC_MethodHook() {
+                @Override
+                protected void afterHookedMethod(MethodHookParam param) throws Throwable {
+                    View v = (View) param.thisObject;
+                    v.setBackgroundColor(COLOR_AMOLED_BLACK);
+                    try {
+                        ImageView iv = (ImageView) XposedHelpers.getObjectField(v, "imageView");
+                        if (iv != null) {
+                            iv.setImageDrawable(null);
+                            iv.setVisibility(View.GONE);
+                        }
+                    } catch (Throwable ignored) {}
+                }
+            });
+            XposedHelpers.findAndHookMethod(qsNewBlurClass, "setAlpha", float.class, new XC_MethodHook() {
+                @Override
+                protected void beforeHookedMethod(MethodHookParam param) throws Throwable {
+                    View v = (View) param.thisObject;
+                    v.setBackgroundColor(COLOR_AMOLED_BLACK);
+                }
+            });
+            XposedBridge.log(TAG + "Hooked SecQSNewBlurView for pure black backdrop");
+        } catch (Throwable t) {
+            XposedBridge.log(TAG + "Error hooking SecQSNewBlurView: " + t);
         }
 
         // 2. Samsung SecPanelBackground (Notification Shade backdrop blackout)
@@ -207,7 +366,18 @@ public class HookEntry implements IXposedHookLoadPackage {
                 protected void afterHookedMethod(MethodHookParam param) throws Throwable {
                     View v = (View) param.thisObject;
                     XposedHelpers.setFloatField(v, "mMaxAlpha", 1.0f);
-                    v.setBackgroundColor(COLOR_AMOLED_BLACK);
+                    Drawable bg = v.getBackground();
+                    if (bg instanceof android.graphics.drawable.GradientDrawable) {
+                        ((android.graphics.drawable.GradientDrawable) bg).setColor(COLOR_AMOLED_BLACK);
+                        ((android.graphics.drawable.GradientDrawable) bg).setAlpha(255);
+                    } else if (bg instanceof ColorDrawable) {
+                        ((ColorDrawable) bg).setColor(COLOR_AMOLED_BLACK);
+                    } else {
+                        android.graphics.drawable.GradientDrawable gd = new android.graphics.drawable.GradientDrawable();
+                        gd.setColor(COLOR_AMOLED_BLACK);
+                        gd.setAlpha(255);
+                        v.setBackground(gd);
+                    }
                 }
             };
             XposedHelpers.findAndHookConstructor(secPanelBgClass, Context.class, android.util.AttributeSet.class, panelHook);
@@ -216,86 +386,72 @@ public class HookEntry implements IXposedHookLoadPackage {
                 protected void beforeHookedMethod(MethodHookParam param) throws Throwable {
                     View v = (View) param.thisObject;
                     XposedHelpers.setFloatField(v, "mMaxAlpha", 1.0f);
-                    v.setBackgroundColor(COLOR_AMOLED_BLACK);
+                    float f = (float) param.args[0];
+                    if (f > 0.01f) {
+                        param.args[0] = 1.0f;
+                    }
+                    Drawable bg = v.getBackground();
+                    if (bg instanceof android.graphics.drawable.GradientDrawable) {
+                        ((android.graphics.drawable.GradientDrawable) bg).setColor(COLOR_AMOLED_BLACK);
+                        ((android.graphics.drawable.GradientDrawable) bg).setAlpha(255);
+                    } else if (bg instanceof ColorDrawable) {
+                        ((ColorDrawable) bg).setColor(COLOR_AMOLED_BLACK);
+                    }
                 }
             });
-            XposedBridge.log(TAG + "Hooked SecPanelBackground for 100% opaque AMOLED backdrop");
+            XposedBridge.log(TAG + "Hooked SecPanelBackground for 100% opaque AMOLED backdrop (GradientDrawable safe)");
         } catch (Throwable t) {
             XposedBridge.log(TAG + "Error hooking SecPanelBackground: " + t);
         }
 
-        // 2b. NotificationShadeWindowView onDraw blackout (only when panel/QS is open, never for HUN popups)
+        // 2a-2. SecPanelBackgroundBinder.updateBackgroundColor (ensure pure black on QS blur background)
         try {
-            Class<?> shadeWindowClass = XposedHelpers.findClass("com.android.systemui.shade.NotificationShadeWindowView", cl);
-            XposedHelpers.findAndHookMethod(shadeWindowClass, "onDraw", Canvas.class, new XC_MethodHook() {
+            Class<?> binderClass = XposedHelpers.findClass("com.android.systemui.blur.ui.viewbinder.SecPanelBackgroundBinder", cl);
+            XposedHelpers.findAndHookMethod(binderClass, "updateBackgroundColor", new XC_MethodHook() {
                 @Override
                 protected void afterHookedMethod(MethodHookParam param) throws Throwable {
-                    View root = (View) param.thisObject;
-                    int panelBgId = root.getResources().getIdentifier("notification_panel_background", "id", root.getContext().getPackageName());
-                    int qsId = root.getResources().getIdentifier("qs_frame", "id", root.getContext().getPackageName());
-                    View panelBg = panelBgId != 0 ? root.findViewById(panelBgId) : null;
-                    View qs = qsId != 0 ? root.findViewById(qsId) : null;
-                    
-                    // ONLY black out when the pull-down shade panel or QS is actively visible.
-                    // Never check notification_stack_scroller here, because HUN (heads-up popups) make
-                    // the stack scroller visible over running apps without opening the shade!
-                    boolean panelVisible = panelBg != null && panelBg.getVisibility() == View.VISIBLE && panelBg.getAlpha() > 0.01f;
-                    boolean qsVisible = qs != null && qs.getVisibility() == View.VISIBLE && qs.getAlpha() > 0.01f;
-                    
-                    if (panelVisible || qsVisible) {
-                        Canvas canvas = (Canvas) param.args[0];
-                        if (canvas != null) {
-                            float alpha = panelVisible ? panelBg.getAlpha() : (qs != null ? qs.getAlpha() : 1.0f);
-                            int a = Math.round(Math.min(1.0f, alpha * 2.0f) * 255);
-                            canvas.drawColor(Color.argb(a, 0, 0, 0));
+                    Object binder = param.thisObject;
+                    View view = (View) XposedHelpers.getObjectField(binder, "view");
+                    if (view != null) {
+                        view.setBackgroundColor(COLOR_AMOLED_BLACK);
+                    }
+                    View shadeWindow = (View) XposedHelpers.getObjectField(binder, "shadeWindowView");
+                    if (shadeWindow != null) {
+                        int qsBgId = shadeWindow.getResources().getIdentifier("qs_new_blur_background", "id", shadeWindow.getContext().getPackageName());
+                        if (qsBgId != 0) {
+                            View qsBg = shadeWindow.findViewById(qsBgId);
+                            if (qsBg != null && qsBg.getBackground() instanceof android.graphics.drawable.GradientDrawable) {
+                                ((android.graphics.drawable.GradientDrawable) qsBg.getBackground()).setColor(COLOR_AMOLED_BLACK);
+                                ((android.graphics.drawable.GradientDrawable) qsBg.getBackground()).setAlpha(255);
+                            }
                         }
                     }
                 }
             });
-            XposedBridge.log(TAG + "Hooked NotificationShadeWindowView.onDraw for guaranteed blackout (panel gated)");
+            XposedBridge.log(TAG + "Hooked SecPanelBackgroundBinder.updateBackgroundColor for pure black");
         } catch (Throwable t) {
-            XposedBridge.log(TAG + "Error hooking NotificationShadeWindowView.onDraw: " + t);
+            XposedBridge.log(TAG + "Error hooking SecPanelBackgroundBinder: " + t);
         }
 
-        // 2c. CapturedBlurContainer (Suppress grey blur)
+        // 2c. ScrimController & ScrimView (100% Solid Pitch Black Backdrop)
         try {
-            Class<?> capturedBlurClass = XposedHelpers.findClass("com.android.systemui.statusbar.phone.CapturedBlurContainer", cl);
-            XposedHelpers.findAndHookConstructor(capturedBlurClass, Context.class, android.util.AttributeSet.class, new XC_MethodHook() {
+            Class<?> scrimControllerClass = XposedHelpers.findClass("com.android.systemui.statusbar.phone.ScrimController", cl);
+            XposedHelpers.findAndHookMethod(scrimControllerClass, "updateScrimColor", View.class, float.class, int.class, new XC_MethodHook() {
                 @Override
-                protected void afterHookedMethod(MethodHookParam param) throws Throwable {
-                    View v = (View) param.thisObject;
-                    v.setVisibility(View.GONE);
+                protected void beforeHookedMethod(MethodHookParam param) throws Throwable {
+                    float alpha = (float) param.args[1];
+                    if (alpha > 0.01f) {
+                        param.args[1] = 1.0f;
+                    }
+                    param.args[2] = COLOR_AMOLED_BLACK;
                 }
             });
-            XposedBridge.log(TAG + "Hooked CapturedBlurContainer to suppress blur");
-        } catch (Throwable t) {
-            XposedBridge.log(TAG + "Error hooking CapturedBlurContainer: " + t);
-        }
 
-        // 2c. ScrimView & ScrimDrawable
-        try {
             Class<?> scrimViewClass = XposedHelpers.findClass("com.android.systemui.scrim.ScrimView", cl);
             XposedHelpers.findAndHookMethod(scrimViewClass, "setTint", int.class, new XC_MethodHook() {
                 @Override
                 protected void beforeHookedMethod(MethodHookParam param) throws Throwable {
                     param.args[0] = COLOR_AMOLED_BLACK;
-                }
-            });
-
-            XposedHelpers.findAndHookMethod(scrimViewClass, "onDraw", Canvas.class, new XC_MethodHook() {
-                @Override
-                protected void afterHookedMethod(MethodHookParam param) throws Throwable {
-                    try {
-                        String name = (String) XposedHelpers.getObjectField(param.thisObject, "mScrimName");
-                        if ("behind_scrim".equals(name) || "notifications".equals(name)) {
-                            Canvas canvas = (Canvas) param.args[0];
-                            float alpha = XposedHelpers.getFloatField(param.thisObject, "mViewAlpha");
-                            if (canvas != null && alpha > 0.05f) {
-                                int a = Math.round(Math.min(1.0f, alpha * 1.5f) * 255);
-                                canvas.drawColor(Color.argb(a, 0, 0, 0));
-                            }
-                        }
-                    } catch (Throwable ignored) {}
                 }
             });
 
@@ -306,13 +462,15 @@ public class HookEntry implements IXposedHookLoadPackage {
                     param.args[0] = COLOR_AMOLED_BLACK;
                 }
             });
-            XposedBridge.log(TAG + "Hooked ScrimView & ScrimDrawable for pure black backdrop");
+            XposedBridge.log(TAG + "Hooked ScrimController & ScrimView for pure black backdrop");
         } catch (Throwable t) {
-            XposedBridge.log(TAG + "Error hooking ScrimView/ScrimDrawable: " + t);
+            XposedBridge.log(TAG + "Error hooking ScrimController/ScrimView: " + t);
         }
-        // 3. Quick Settings ColoredBGHelper (Container cards)
+
+        // 3. Quick Settings ColoredBGHelper (Container cards + Subtle Outlines)
         try {
             Class<?> coloredBgClass = XposedHelpers.findClass("com.android.systemui.qs.bar.ColoredBGHelper", cl);
+
             XC_MethodHook bgHook = new XC_MethodHook() {
                 @Override
                 protected void beforeHookedMethod(MethodHookParam param) throws Throwable {
@@ -320,6 +478,7 @@ public class HookEntry implements IXposedHookLoadPackage {
                         XposedHelpers.setIntField(param.thisObject, "WALLPAPER_FIXED_ALPHA", 255);
                         XposedHelpers.setIntField(param.thisObject, "THEME_FIXED_ALPHA", 255);
                         XposedHelpers.setIntField(param.thisObject, "curAlpha", 255);
+                        XposedHelpers.setIntField(param.thisObject, "curExtractColor", COLOR_AMOLED_BLACK);
                         XposedHelpers.setIntField(param.thisObject, "actualAppliedColor", COLOR_AMOLED_BLACK);
                     } catch (Throwable ignored) {}
                     if (param.args.length > 1 && param.args[1] instanceof Integer) {
@@ -332,17 +491,17 @@ public class HookEntry implements IXposedHookLoadPackage {
                     View view = (View) param.args[0];
                     if (view != null) {
                         Drawable d = view.getBackground();
-                        if (d instanceof LayerDrawable) {
-                            LayerDrawable ld = (LayerDrawable) d;
-                            for (int i = 0; i < ld.getNumberOfLayers(); i++) {
-                                Drawable layer = ld.getDrawable(i);
-                                if (layer instanceof android.graphics.drawable.GradientDrawable) {
-                                    ((android.graphics.drawable.GradientDrawable) layer).setColor(COLOR_AMOLED_BLACK);
+                        if (d != null) {
+                            try {
+                                int solidId = view.getResources().getIdentifier("colored_bg_solid", "id", view.getContext().getPackageName());
+                                if (solidId != 0) {
+                                    Drawable solid = (Drawable) XposedHelpers.callMethod(d, "findDrawableByLayerId", solidId);
+                                    if (solid != null) {
+                                        solid.setTint(COLOR_AMOLED_BLACK);
+                                        solid.setAlpha(255);
+                                    }
                                 }
-                            }
-                            ld.setColorFilter(COLOR_AMOLED_BLACK, android.graphics.PorterDuff.Mode.SRC_IN);
-                        } else if (d instanceof android.graphics.drawable.GradientDrawable) {
-                            ((android.graphics.drawable.GradientDrawable) d).setColor(COLOR_AMOLED_BLACK);
+                            } catch (Throwable ignored) {}
                         }
                     }
                 }
@@ -356,7 +515,7 @@ public class HookEntry implements IXposedHookLoadPackage {
                     param.setResult(COLOR_AMOLED_BLACK);
                 }
             });
-            XposedBridge.log(TAG + "Hooked ColoredBGHelper for QS containers");
+            XposedBridge.log(TAG + "Hooked ColoredBGHelper for AMOLED containers with subtle outlines");
         } catch (Throwable t) {
             XposedBridge.log(TAG + "Error hooking ColoredBGHelper: " + t);
         }
@@ -368,14 +527,90 @@ public class HookEntry implements IXposedHookLoadPackage {
                 @Override
                 protected void beforeHookedMethod(MethodHookParam param) throws Throwable {
                     int state = (int) param.args[0];
-                    if (state == 0 || state == 1) { // Inactive or disabled
-                        param.setResult(0xFF161616); // Subtle dark contrast circle
+                    if (state == 0 || state == 1) {
+                        param.setResult(COLOR_AMOLED_BLACK); // 100% PURE AMOLED PITCH BLACK circle!
                     }
                 }
             });
             XposedBridge.log(TAG + "Hooked SecQSTileBaseView inactive circle color");
         } catch (Throwable t) {
             XposedBridge.log(TAG + "Error hooking SecQSTileBaseView: " + t);
+        }
+
+        // 4b. Media Output Card (SecMediaControlPanel)
+        try {
+            Class<?> mediaPanelClass = XposedHelpers.findClass("com.android.systemui.media.SecMediaControlPanel", cl);
+            for (Method m : mediaPanelClass.getDeclaredMethods()) {
+                if ("bind".equals(m.getName()) && m.getParameterCount() == 2) {
+                    XposedBridge.hookMethod(m, new XC_MethodHook() {
+                        @Override
+                        protected void afterHookedMethod(MethodHookParam param) throws Throwable {
+                            try {
+                                Object vh = XposedHelpers.getObjectField(param.thisObject, "mViewHolder");
+                                if (vh != null) {
+                                    try {
+                                        ImageView albumView = (ImageView) XposedHelpers.getObjectField(vh, "albumView");
+                                        if (albumView != null) {
+                                            albumView.setVisibility(View.GONE);
+                                            albumView.setImageDrawable(null);
+                                        }
+                                    } catch (Throwable ignored) {}
+                                    View playerView = (View) XposedHelpers.getObjectField(vh, "playerView");
+                                    if (playerView != null) {
+                                        int density = Math.round(playerView.getResources().getDisplayMetrics().density);
+                                        android.graphics.drawable.GradientDrawable gd = new android.graphics.drawable.GradientDrawable();
+                                        gd.setColor(COLOR_AMOLED_BLACK);
+                                        gd.setCornerRadius(26f * density);
+                                        playerView.setBackground(gd);
+                                    }
+                                }
+                            } catch (Throwable ignored) {}
+                        }
+                    });
+                    break;
+                }
+            }
+            XposedBridge.log(TAG + "Hooked SecMediaControlPanel for AMOLED media card");
+        } catch (Throwable t) {
+            XposedBridge.log(TAG + "Error hooking SecMediaControlPanel: " + t);
+        }
+
+        // 4c. MediaType.getSupportArtwork (Disable album art covering media card)
+        try {
+            Class<?> mediaTypeClass = XposedHelpers.findClass("com.android.systemui.media.MediaType", cl);
+            XposedHelpers.findAndHookMethod(mediaTypeClass, "getSupportArtwork", new XC_MethodHook() {
+                @Override
+                protected void beforeHookedMethod(MethodHookParam param) throws Throwable {
+                    param.setResult(false);
+                }
+            });
+            XposedBridge.log(TAG + "Disabled MediaType.getSupportArtwork for pure black media card");
+        } catch (Throwable t) {
+            XposedBridge.log(TAG + "Error hooking MediaType.getSupportArtwork: " + t);
+        }
+
+        // 4d. SecPlayerViewHolder (Disable album art from construction)
+        try {
+            Class<?> holderClass = XposedHelpers.findClass("com.android.systemui.media.SecPlayerViewHolder", cl);
+            for (Constructor<?> c : holderClass.getDeclaredConstructors()) {
+                XposedBridge.hookMethod(c, new XC_MethodHook() {
+                    @Override
+                    protected void afterHookedMethod(MethodHookParam param) throws Throwable {
+                        try {
+                            ImageView albumView = (ImageView) XposedHelpers.getObjectField(param.thisObject, "albumView");
+                            if (albumView != null) {
+                                albumView.setVisibility(View.GONE);
+                                albumView.setBackground(null);
+                                albumView.setForeground(null);
+                                albumView.setImageDrawable(null);
+                            }
+                        } catch (Throwable ignored) {}
+                    }
+                });
+            }
+            XposedBridge.log(TAG + "Hooked SecPlayerViewHolder constructors");
+        } catch (Throwable t) {
+            XposedBridge.log(TAG + "Error hooking SecPlayerViewHolder: " + t);
         }
 
         // 5. Brightness Slider Track (ToggleSeekBar)

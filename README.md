@@ -13,15 +13,14 @@ Designed specifically for OLED / AMOLED displays to maximize battery life, turn 
   - Suppresses wallpaper blur brightening (`y2.e` / `WallpaperBlurView`) and forces `y2.d` (`ScrimView`) to draw solid black.
   - Sets pure black status bar and navigation bar decor for seamless edge-to-edge aesthetics.
 - **Pure AMOLED Notification Shade**:
-  - Every notification card (`NotificationBackgroundView`) is styled with pure black background layers while preserving rounded corner geometry and vibrant icons/text.
-  - Eliminates grey card blur (`BackgroundBlurDrawable`).
-  - Full backdrop blackout via `NotificationShadeWindowView.onDraw` and `SecPanelBackground`, eliminating transparent see-through glass and wallpaper bleed-through.
+  - Every notification card (`NotificationBackgroundView`) is drawn directly with a solid, pure black (`#000000`) fill matching native corner radii, completely suppressing app tint leaks (Nu, Telegram, etc.) with zero wireframes.
+  - Eliminates the window blur under heads-up notifications (`NotiRune.NOTI_STYLE_ENR_WINDOW_BLUR` & `BackgroundBlurDrawable`).
+  - Full backdrop blackout via `SecQpBlurController.doBlur`, `SecCapturedBlurContainerBinder`, `SecPanelBackground`, and `ScrimController.updateScrimColor`, ensuring 100% opaque `#000000` black with zero wallpaper or background app blur showing through.
 - **AMOLED Quick Settings Panel (One UI 8 Split Layout)**:
-  - Wi-Fi & Bluetooth pill cards, 4x3 toggle container, media card, and SmartThings container are themed to pure AMOLED black.
-  - Inactive toggle buttons have subtle `#161616` pills for crisp icon contrast.
+  - Wi-Fi & Bluetooth pill cards, 4x3 toggle container, media card, and SmartThings container are themed to solid pure AMOLED black.
+  - Inactive toggle buttons have pure `#000000` circular pills with crisp white icons.
   - Brightness slider track background is blacked out.
   - Jetpack Compose Material 3 `ColorScheme` containers patched to pure black.
-
 ---
 
 ## 📱 Requirements
@@ -43,13 +42,16 @@ Designed specifically for OLED / AMOLED displays to maximize battery life, turn 
    - `y2.e` (`WallpaperBlurView`): Silences hardware wallpaper blur.
 
 2. **System UI (`com.android.systemui`)**:
-   - `NotificationBackgroundView`: Sets `BackgroundBlurDrawable` alpha to 0 and styles all `GradientDrawable` layers in `mBackground` to `#000000`.
-   - `NotificationShadeWindowView`: Hooks `onDraw` to guarantee an opaque pure black backdrop behind all notification cards and quick settings.
-   - `SecPanelBackground`: Forces `mMaxAlpha` to 1.0f and sets solid black `GradientDrawable`.
-   - `ColoredBGHelper`: Overrides alpha values to 255 and tints all container `LayerDrawable` layers to pure black.
-   - `SecQSTileBaseView`: Sets inactive toggle circle backgrounds to subtle dark pill (`#161616`).
+   - `NotiRune.NOTI_STYLE_ENR_WINDOW_BLUR`: Disabled via reflection to permanently prevent SurfaceFlinger from projecting a blur layer under Heads-Up Notification (HUN) banners.
+   - `NotificationBackgroundView`: Replaces `seslRecoilDrawable` with direct, clean `#000000` AMOLED fill matching exact corner radii, and rejects `BackgroundBlurDrawable` in `setBackground`.
+   - `SecQpBlurController.doBlur`: Synchronizes `SecPanelBackground` to solid `#000000` black at `alpha = 1.0f` on expansion and hides it on collapse.
+   - `SecCapturedBlurContainerBinder`: Suppresses background app screenshot capture and forces `CapturedBlurContainer` to solid black.
+   - `ScrimController.updateScrimColor`: Forces all shade scrims (`mScrimBehind`, etc.) to 100% opaque `#000000` black.
+   - `SecPanelBackground`: Forces `mMaxAlpha` to 1.0f with pure black fill.
+   - `ColoredBGHelper`: Forces alpha values to 255 and tints all container backgrounds to pure black.
+   - `SecQSTileBaseView`: Sets inactive toggle circle backgrounds to pure AMOLED `#000000`.
+   - `SecMediaControlPanel` & `SecPlayerViewHolder`: Strips `albumView` and sets `playerView` to solid `#000000` black.
    - `androidx.compose.material3.ColorScheme`: Patches Compose surface/container colors to 64-bit AMOLED black.
-
 ---
 
 ## 🚀 Building from Source
