@@ -1,0 +1,11 @@
+build/
+.gradle/
+*.apk
+*.idsig
+*.zip
+*.keystore
+.DS_Store
+*.iml
+.idea/
+claude_analysis*/
+*.png
